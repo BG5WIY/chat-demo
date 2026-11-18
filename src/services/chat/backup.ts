@@ -40,14 +40,14 @@ export const exportHistory = (): Promise<{ name: string; blob: Blob }> =>
   })
 
 /**
- * 确认覆盖后调用：先检查 ZIP 格式与版本，校验失败时保留正在生成的回答；
- * 通过后从 ZIP 流式写入暂存，成功才替换原有会话与图片原件。返回导入的会话数。
+ * 确认导入后调用：先检查 ZIP 格式与版本，校验失败时保留正在生成的回答；
+ * 通过后从 ZIP 流式写入暂存，再增量合并到现有会话（相同跳过、冲突作为分支）。
  */
-export const importHistory = (file: File): Promise<number> =>
+export const importHistory = (file: File): Promise<db.CommitResult> =>
   enqueueBackup(async () => {
     const { checkArchiveFormat, importArchive } = await import('./history/importArchive.js')
     await checkArchiveFormat(file)
-    return replaceHistory(() => importArchive(file))
+    return replaceHistory(() => importArchive(file), db.commitImport)
   })
 
 /** 确认删除后调用：以空历史原子替换全部本地会话与附件，保留 API Key 和其他设置。 */

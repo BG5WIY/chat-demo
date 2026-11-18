@@ -386,10 +386,14 @@ const waitForIdle = (sessionId?: string) =>
   })
 
 /**
- * 替换历史对话：先写入暂存，成功后原子替换旧记录；写入为空即删除全部会话与附件。
+ * 重写历史对话：先写入暂存，成功后由 commit 提交。
+ * 默认 commitStaging 清空并替换全部记录（清空历史）；导入时传入 commitImport 做增量合并。
  * 期间停止生成并禁止修改会话；失败时清除暂存，保留原有记录。
  */
-export const replaceHistory = async (write: () => Promise<void>): Promise<number> => {
+export const replaceHistory = async (
+  write: () => Promise<void>,
+  commit: () => Promise<db.CommitResult> = db.commitStaging
+): Promise<db.CommitResult> => {
   if (get().importingHistory) {
     throw new Error('History replacement is already in progress')
   }
@@ -405,10 +409,10 @@ export const replaceHistory = async (write: () => Promise<void>): Promise<number
     sessionLoads.clear()
     await waitForIdle()
     await db.clearStaging()
-    let summaries: SessionSummary[]
+    let result: db.CommitResult
     try {
       await write()
-      summaries = await db.commitStaging()
+      result = await commit()
     } catch (error) {
       await db.clearStaging().catch(db.reportStorageError('clear unfinished history replacement'))
       throw error
@@ -417,16 +421,18 @@ export const replaceHistory = async (write: () => Promise<void>): Promise<number
     unsavedSessions.clear()
     pendingFiles.clear()
     clearAllDrafts()
+    const activeId = get().activeId
+    const keepActive = activeId !== null && result.summaries.some((item) => item.id === activeId)
     set({
       ready: true,
       initError: false,
-      sessions: sortSessions(summaries),
+      sessions: sortSessions(result.summaries),
       sessionCache: {},
       sessionLoadErrors: {},
       sessionSaveErrors: {},
-      activeId: null,
+      activeId: keepActive ? activeId : null,
     })
-    return summaries.length
+    return result
   } finally {
     set({ importingHistory: false })
     retrySaveSessions()

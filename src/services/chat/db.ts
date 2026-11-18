@@ -1,8 +1,15 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
+import { mergeImportedSession, sessionFingerprint, type ImportStats } from './history/merge.js'
 import { toSessionSummary, type Session, type SessionSummary } from './types.js'
 
 /** IndexedDB 存储结构版本；新增或调整存储、索引时递增。 */
-const DB_VERSION = 11
+const DB_VERSION = 12
+
+/** 上次导入某会话时的内容指纹，用于区分“本地未改动”和“双方都改动”的情况。 */
+export type ImportBase = { id: string; fingerprint: string; importedAt: number }
+
+/** 一次导入提交的结果：合并后的全部会话摘要和分类统计。 */
+export type CommitResult = { summaries: SessionSummary[]; stats?: ImportStats }
 
 /** 文件原件按附件的本地 id 存储，所有引用同一 id 的消息共用一份；用于缩略图、打开查看，以及没有 serverId 时补传。 */
 export type StoredFile = {
@@ -29,6 +36,8 @@ interface ChatDB extends DBSchema {
    */
   sessionsStaging: { key: string; value: Session }
   filesStaging: { key: string; value: StoredFile }
+  /** 每个导入会话上次导入时的内容指纹 */
+  importBases: { key: string; value: ImportBase }
 }
 
 let dbPromise: Promise<IDBPDatabase<ChatDB>> | null = null
@@ -57,7 +66,13 @@ const getDB = () =>
   (dbPromise ??= openDB<ChatDB>('chat-demo', DB_VERSION, {
     upgrade(db, _oldVersion, _newVersion, tx) {
       // 初始化当前格式需要的存储与索引，不迁移旧消息。
-      for (const name of ['sessions', 'files', 'sessionsStaging', 'filesStaging'] as const) {
+      for (const name of [
+        'sessions',
+        'files',
+        'sessionsStaging',
+        'filesStaging',
+        'importBases',
+      ] as const) {
         if (!db.objectStoreNames.contains(name)) {
           db.createObjectStore(name, { keyPath: 'id' })
         }
@@ -125,7 +140,10 @@ export const renameSession = async (id: string, title: string): Promise<void> =>
 
 /** 删除会话，仅清理已无会话引用的本地原件；远端文件不删。 */
 export const deleteSession = async (sessionId: string): Promise<void> => {
-  const tx = (await getDB()).transaction(['sessions', 'sessionSummaries', 'files'], 'readwrite')
+  const tx = (await getDB()).transaction(
+    ['sessions', 'sessionSummaries', 'files', 'importBases'],
+    'readwrite'
+  )
   await Promise.all([
     (async () => {
       try {
@@ -133,6 +151,7 @@ export const deleteSession = async (sessionId: string): Promise<void> => {
         const summary = await summaries.get(sessionId)
         await tx.objectStore('sessions').delete(sessionId)
         await summaries.delete(sessionId)
+        await tx.objectStore('importBases').delete(sessionId)
         for (const id of summary?.fileIds ?? []) {
           if ((await summaries.index('fileIds').count(id)) === 0) {
             await tx.objectStore('files').delete(id)
@@ -207,10 +226,10 @@ export const updateStagingFileTypes = async (types: ReadonlyMap<string, string>)
  * 导入完成后用暂存替换正式数据：同一事务中替换会话、摘要和原件，并清空暂存。
  * 逐条游标复制，同一时间只读取一条记录；事务失败时整体回滚，正式数据不变。
  */
-export const commitStaging = async (): Promise<SessionSummary[]> => {
+export const commitStaging = async (): Promise<CommitResult> => {
   const summaries: SessionSummary[] = []
   const tx = (await getDB()).transaction(
-    ['sessions', 'sessionSummaries', 'files', 'sessionsStaging', 'filesStaging'],
+    ['sessions', 'sessionSummaries', 'files', 'sessionsStaging', 'filesStaging', 'importBases'],
     'readwrite'
   )
   const move = async (from: 'sessionsStaging' | 'filesStaging', to: 'sessions' | 'files') => {
@@ -219,6 +238,7 @@ export const commitStaging = async (): Promise<SessionSummary[]> => {
       await target.clear()
       if (to === 'sessions') {
         await tx.objectStore('sessionSummaries').clear()
+        await tx.objectStore('importBases').clear()
       }
       for (
         let cursor = await tx.objectStore(from).openCursor();
@@ -241,7 +261,77 @@ export const commitStaging = async (): Promise<SessionSummary[]> => {
   }
   await Promise.all([move('sessionsStaging', 'sessions'), move('filesStaging', 'files'), tx.done])
   // 直接返回本次提交的列表，调用方无需在替换成功后再发起可能失败的读取。
-  return summaries
+  return { summaries }
+}
+
+/**
+ * 增量导入：逐个合并暂存会话，只写入新增或变化的记录，不再清空本地数据。
+ * 同一事务内完成会话、摘要、基线与图片原件的写入，失败整体回滚。
+ */
+export const commitImport = async (): Promise<CommitResult> => {
+  const stats: ImportStats = { added: 0, updated: 0, merged: 0, skipped: 0 }
+  const tx = (await getDB()).transaction(
+    [
+      'sessions',
+      'sessionSummaries',
+      'files',
+      'sessionsStaging',
+      'filesStaging',
+      'importBases',
+    ],
+    'readwrite'
+  )
+  await Promise.all([
+    (async () => {
+      try {
+        const sessions = tx.objectStore('sessions')
+        const summaries = tx.objectStore('sessionSummaries')
+        const bases = tx.objectStore('importBases')
+        const staging = tx.objectStore('sessionsStaging')
+        for (let cursor = await staging.openCursor(); cursor; cursor = await cursor.continue()) {
+          const imported = cursor.value
+          const base = (await bases.get(imported.id))?.fingerprint
+          const { session, action } = mergeImportedSession(
+            await sessions.get(imported.id),
+            imported,
+            base
+          )
+          stats[action] += 1
+          // 基线始终记录本次导入的版本：本地内容与导入一致时也同步基线，
+          // 否则下次比较会把本地误判成“已改动”。
+          await bases.put({
+            id: imported.id,
+            fingerprint: sessionFingerprint(imported),
+            importedAt: Date.now(),
+          })
+          if (action === 'skipped') {
+            continue
+          }
+          await sessions.put(session)
+          await summaries.put(storedSummary(session))
+        }
+        const files = tx.objectStore('files')
+        const stagingFiles = tx.objectStore('filesStaging')
+        for (
+          let cursor = await stagingFiles.openCursor();
+          cursor;
+          cursor = await cursor.continue()
+        ) {
+          if ((await files.getKey(cursor.value.id)) === undefined) {
+            await files.put(cursor.value)
+          }
+        }
+        await staging.clear()
+        await stagingFiles.clear()
+      } catch (error) {
+        abortTransaction(tx)
+        throw error
+      }
+    })(),
+    tx.done,
+  ])
+  const summaries = (await (await getDB()).getAll('sessionSummaries')).map(toSessionSummary)
+  return { summaries, stats }
 }
 
 /** 本地存储失败不打断对话，只在控制台留痕 */

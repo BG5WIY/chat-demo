@@ -314,7 +314,7 @@ const TtsVoiceSetting = () => {
   )
 }
 
-/** 覆盖导入的二次确认，叠在设置弹窗上 */
+/** 合并导入的二次确认，叠在设置弹窗上 */
 const ImportConfirm = ({
   historyImport,
 }: {
@@ -331,7 +331,7 @@ const ImportConfirm = ({
           <Button variant="outlined" size="m" autoFocus onClick={historyImport.cancel}>
             {t('cancel')}
           </Button>
-          <Button variant="dangerOutlined" size="m" onClick={() => void historyImport.confirm()}>
+          <Button variant="primary" size="m" onClick={() => void historyImport.confirm()}>
             {t('historyImportConfirm')}
           </Button>
         </>
@@ -436,7 +436,7 @@ const SettingCell = ({
   )
 }
 
-/** 选文件后先提示覆盖；确认后才检查文件并执行导入，任何错误都提示导入失败。 */
+/** 选文件后先确认合并；确认后才检查文件并执行导入，任何错误都提示导入失败。 */
 const useHistoryImport = () => {
   const [file, setFile] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
@@ -452,8 +452,11 @@ const useHistoryImport = () => {
     setBusy(true)
     setStatus(null)
     try {
-      const count = await importHistory(file)
-      setStatus({ key: count === 1 ? 'historyImportedOne' : 'historyImported', params: { count } })
+      const { stats } = await importHistory(file)
+      setStatus({
+        key: 'historyImportSummary',
+        params: stats ?? { added: 0, updated: 0, merged: 0, skipped: 0 },
+      })
     } catch {
       setStatus({ key: 'historyImportFailed', error: true })
     } finally {
@@ -465,7 +468,7 @@ const useHistoryImport = () => {
   return { file, busy, status, select: setFile, cancel: () => setFile(null), confirm }
 }
 
-/** 导入 = 覆盖：用选中文件替换本地全部会话与附件。 */
+/** 导入 = 合并：只写入有变化的会话，冲突内容作为消息分支保留。 */
 const ImportHistory = ({
   historyImport,
   disabled,

@@ -117,11 +117,12 @@ export const zh = {
   apiKeyVerificationFailed: '校验失败：{message}',
   historyImport: '导入历史对话',
   historyImportConfirm: '确认导入',
-  historyImportConfirmTitle: '确认导入历史对话？',
-  historyImportConfirmDescription: '上传的历史对话会覆盖当前所有对话记录，是否确认导入？',
-  historyImportDescription: '导入历史对话会覆盖全部本地对话和附件，支持 DeepSeek 导出的 ZIP 文件。',
-  historyImportedOne: '已导入 1 个对话',
-  historyImported: '已导入 {count} 个对话',
+  historyImportConfirmTitle: '确认合并导入历史对话？',
+  historyImportConfirmDescription:
+    '导入会合并到现有对话，不清空本地记录：内容相同的跳过，本地未修改的更新，双方都不同的版本作为消息分支保留。',
+  historyImportDescription:
+    '合并导入 DeepSeek 导出的 ZIP：只写入有变化的对话，冲突内容作为消息分支保留。',
+  historyImportSummary: '导入完成：新增 {added}、更新 {updated}、新增分支 {merged}、跳过 {skipped}',
   historyImportFailed:
     '文件导入失败，可能是文件格式错误或使用了旧版的对话导出 ZIP 文件，请前往 DeepSeek 重新导出历史对话文件后再次导入。',
   historyExportFailed: '导出失败：{message}',
