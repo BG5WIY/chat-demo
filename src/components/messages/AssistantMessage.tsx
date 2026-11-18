@@ -16,6 +16,7 @@ import { toggleSearchPanel, useSearchPanel } from '../search/searchPanelState.js
 import { ReadAloudButton } from './ReadAloudButton.js'
 import { CopyButton } from './CopyButton.js'
 import { ReplyArea } from './ReplyArea.js'
+import { RoundUsage } from './UsageBadge.js'
 import { useReplyView } from './useReplyView.js'
 import {
   BranchSwitcher,
@@ -141,6 +142,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       {streaming ? null : (
         <div className={styles.bottom}>
           <BranchSwitcher versions={versions} disabled={busy} onSelect={onSelectVersion} />
+          <RoundUsage message={message} />
           <div className={clsx(styles.actions, isLast && styles.alwaysShow)}>
             {copyText ? <CopyButton text={copyText} /> : null}
             {responseText && !refused ? (

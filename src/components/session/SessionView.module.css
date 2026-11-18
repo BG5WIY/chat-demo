@@ -29,6 +29,12 @@
   margin-left: 113px;
 }
 
+.usage {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-right: 4px;
+}
+
 .inputContainer {
   position: sticky;
   bottom: 0;
